@@ -1,0 +1,104 @@
+import os
+import json
+import requests
+import openai
+import textwrap
+import schedule
+import time
+from tabulate import tabulate
+from datetime import datetime
+
+# Set Jira and OpenAI API credentials
+JIRA_EMAIL = os.environ["JIRA_EMAIL"]
+JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+
+# Replace this with your MS Teams incoming webhook URL
+MS_TEAMS_WEBHOOK_URL = "https://example.webhook.office.com/webhook123"
+
+# Configuring OpenAI API key
+openai.api_key = OPENAI_API_KEY
+
+# Replace with your Jira instance URL and project key
+JIRA_BASE_URL = "https://your_company.atlassian.net"
+JIRA_PROJECT_KEY = "PROJECTKEY"
+
+# Ms Teams Functions
+def send_status_update_to_teams(status_update):
+    headers = {"Content-Type": "application/json"}
+    data = json.dumps({"text": status_update})
+    response = requests.post(MS_TEAMS_WEBHOOK_URL, headers=headers, data=data)
+    response.raise_for_status()
+    print("Status update sent to Microsoft Teams channel.")
+
+# Get the current date as a string
+def get_current_date_string():
+    return datetime.now().strftime("%B %d, %Y")
+
+# Fetch defect data from Jira
+def fetch_defects_from_jira():
+    url = f"{JIRA_BASE_URL}/rest/api/3/search"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Basic {JIRA_EMAIL}:{JIRA_API_TOKEN}",
+    }
+    query = {
+        "jql": f"project={JIRA_PROJECT_KEY} AND issuetype=Bug",
+        "fields": ["id", "key", "summary", "status", "priority", "assignee"]
+    }
+    response = requests.get(url, headers=headers, params=query)
+    response.raise_for_status()
+
+    defects = response.json()["issues"]
+    return defects
+
+# Send defect data to ChatGPT
+def generate_defects_status_update(defects):
+    # Calculate the list of columns we need, highlighting unresolved defects
+    table_data = []
+
+    for index, d in enumerate(defects, start=1):
+        status_name = d['fields']['status']['name']
+        highlight = "*" if status_name.lower() not in ["resolved", "closed", "done"] else ""
+        row = [
+            f"{index}{highlight}",
+            f"{d['key']}{highlight}",
+            f"{d['fields']['summary']}{highlight}",
+            f"{status_name}{highlight}",
+            f"{d['fields']['priority']['name']}{highlight}",
+            f"{d['fields']['priority']['name']}{highlight}",  # Replace this with the actual Severity field, as Severity field is usually custom in Jira
+            f"{d['fields']['assignee']['displayName'] if d['fields']['assignee'] else 'Unassigned'}{highlight}",
+        ]
+        table_data.append(row)
+
+    # Create a table using the tabulate library
+    table = tabulate(
+        table_data,
+        headers=["#", "Defect ID", "Description", "Status", "Priority", "Severity", "Assignee"],
+        tablefmt="pipe",
+        numalign="left",
+    )
+
+    # Generate report
+    report_title = f"Daily Status of {get_current_date_string()}"
+    report = f"{report_title}\n\n{table}\n\n* Highlighted cells represent new or unresolved defects."
+
+    return report
+
+def send_update():
+    defects = fetch_defects_from_jira()
+    status_update = generate_defects_status_update(defects)
+    send_status_update_to_teams(status_update)
+
+# Schedule the send_update function
+schedule.every().monday.at("17:00").do(send_update)
+schedule.every().tuesday.at("17:00").do(send_update)
+schedule.every().wednesday.at("17:00").do(send_update)
+schedule.every().thursday.at("17:00").do(send_update)
+schedule.every().friday.at("17:00").do(send_update)
+
+# Keep the script running and execute the scheduled job
+while True:
+    schedule.run_pending()
+    time.sleep(60)
